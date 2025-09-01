@@ -15,7 +15,7 @@ The platform is organized around two primary pathways, determined by the fundame
 Used when you can actively control and randomize treatment assignment.  
 This is the gold standard for establishing causality because randomization ensures that, on average, the treatment and control groups are identical across all characteristics.
 
-➡️ [Click here for the detailed guide to RCT Methods](#)
+➡️ [Click here for the detailed guide to RCT Methods](./rct_methods.md)
 
 ---
 
@@ -24,7 +24,7 @@ This is the gold standard for establishing causality because randomization ensur
 Used when you cannot randomize and must infer causality from observational data.  
 These methods rely on strong, testable assumptions to approximate the conditions of an RCT.
 
-➡️ [Click here for the detailed guide to Observational Methods](#)
+➡️ [Click here for the detailed guide to Observational Methods](./observational_methods.md)
 
 ---
 
@@ -32,4 +32,4 @@ These methods rely on strong, testable assumptions to approximate the conditions
 
 The required structure of your input DataFrame is fundamentally tied to the causal method you intend to use.
 
-➡️ [Click here for the detailed guide to Input Data Designs](#)
+➡️ [Click here for the detailed guide to Input Data Designs](./data_designs.md)
