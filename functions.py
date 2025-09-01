@@ -1,6 +1,6 @@
- # =============================================================================
+# =============================================================================
 #
-# A Modular Python Platform for Causal Inference & Experimentation (v3)
+# A Modular Python Platform for Causal Inference & Experimentation (v4)
 #
 # =============================================================================
 #
@@ -10,8 +10,9 @@
 # analysis. It includes functions for designing and analyzing Randomized
 # Controlled Trials (RCTs) of varying complexity, as well as a suite of
 # quasi-experimental and observational methods for when randomization is not
-# possible. This version includes standardized inputs, pipelining capabilities,
-# a dedicated survival analysis module, and an XGBoost+SHAP estimator.
+# possible. This version integrates advanced estimators like Meta-Learners,
+# multi-treatment DML, and additional quasi-experimental methods like IV and
+# Synthetic Control, based on the user-provided causal_nonrct_pipeline.py.
 #
 # =============================================================================
 
@@ -30,8 +31,11 @@ from statsmodels.stats.power import TTestIndPower, NormalIndPower
 from statsmodels.stats.proportion import proportion_effectsize
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso
 from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import KFold
+
 
 # Specialized causal inference libraries
 from linearmodels.panel import PanelOLS
@@ -62,6 +66,7 @@ def calculate_sample_size_standard(
     metric_type: str, baseline_rate: float, mde: float, alpha: float = 0.05, power: float = 0.8
 ) -> Dict[str, Any]:
     """Performs power analysis for continuous or binary metrics."""
+    # ... [Implementation from previous version] ...
     if metric_type == "binary":
         effect_size = proportion_effectsize(baseline_rate, baseline_rate + mde)
         analysis = NormalIndPower()
@@ -71,16 +76,15 @@ def calculate_sample_size_standard(
     else:
         raise ValueError("metric_type must be 'continuous' or 'binary'")
     sample_size = analysis.solve_power(effect_size=effect_size, power=power, alpha=alpha, ratio=1.0, alternative='two-sided')
-    return {
-        "sample_size_per_group": int(np.ceil(sample_size)),
-        "total_sample_size": int(np.ceil(sample_size * 2)),
-    }
+    return { "sample_size_per_group": int(np.ceil(sample_size)), "total_sample_size": int(np.ceil(sample_size * 2)), }
+
 
 def calculate_sample_size_survival_mc(
     baseline_hazard: float, expected_hazard_ratio: float, follow_up_time: float,
     n_simulations: int = 500, alpha: float = 0.05, power: float = 0.8
 ) -> Dict[str, Any]:
     """Calculates sample size for survival experiments using Monte Carlo simulation."""
+    # ... [Implementation from previous version] ...
     sample_sizes = np.arange(100, 10000, 200)
     for n in tqdm(sample_sizes, desc="Simulating sample sizes"):
         p_values = []
@@ -98,12 +102,9 @@ def calculate_sample_size_survival_mc(
             except: continue
         current_power = np.mean(np.array(p_values) < alpha)
         if current_power >= power:
-            return {
-                "method": "Monte Carlo Simulation for Survival",
-                "estimated_total_sample_size": n,
-                "achieved_power": current_power
-            }
+            return { "method": "Monte Carlo Simulation for Survival", "estimated_total_sample_size": n, "achieved_power": current_power }
     return {"error": "Failed to reach desired power with max sample size."}
+
 
 # =============================================================================
 # MODULE 2: RCT ANALYSIS
@@ -113,9 +114,9 @@ def analyze_rct_ate(
     df: pd.DataFrame, treatment_cols: List[str], outcome_col: str, covariate_cols: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Analyzes a standard A/B/n test (RCT) using ANCOVA (CUPED)."""
+    # ... [Implementation from previous version] ...
     formula = f"{outcome_col} ~ {' + '.join(treatment_cols)}"
-    if covariate_cols:
-        formula += " + " + " + ".join(covariate_cols)
+    if covariate_cols: formula += " + " + " + ".join(covariate_cols)
     model = smf.ols(formula, data=df).fit(cov_type='HC1')
     results = {"method": "ANCOVA (CUPED)" if covariate_cols else "Simple OLS", "summary": str(model.summary())}
     for treat in treatment_cols:
@@ -125,82 +126,38 @@ def analyze_rct_ate(
     return results
 
 def analyze_effects_with_xgboost(
-    df: pd.DataFrame,
-    treatment_cols: List[str],
-    outcome_col: str,
-    covariate_cols: Optional[List[str]] = None
+    df: pd.DataFrame, treatment_cols: List[str], outcome_col: str, covariate_cols: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """
-    Analyzes an experiment using an XGBoost model and SHAP for effect estimation.
-
-    This provides a non-linear alternative to linear regression for estimating marginal effects.
-    In an RCT, the average SHAP value for a treatment is a valid estimate of the ATE.
-    In an observational study, this should be run on data that has been balanced first.
-
-    Args:
-        df (pd.DataFrame): DataFrame for analysis. Can be raw RCT data or balanced observational data.
-        treatment_cols (List[str]): Treatment columns.
-        outcome_col (str): Outcome column.
-        covariate_cols (Optional[List[str]]): Covariate columns.
-
-    Returns:
-        Dict[str, Any]: Dictionary with the estimated marginal effect (ATE) for each treatment.
-    """
-    y = df[outcome_col]
-    feature_cols = treatment_cols + (covariate_cols or [])
-    X = df[feature_cols].copy()
-
-    # Handle categorical features using one-hot encoding
+    """Analyzes an experiment using an XGBoost model and SHAP for effect estimation."""
+    # ... [Implementation from previous version] ...
+    y = df[outcome_col]; feature_cols = treatment_cols + (covariate_cols or []); X = df[feature_cols].copy()
     num_cols, cat_cols = _split_numeric_categorical(df, feature_cols)
-    
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('num', StandardScaler(), num_cols),
-            ('cat', OneHotEncoder(handle_unknown='ignore', drop='first'), cat_cols)
-        ],
-        remainder='passthrough'
-    )
+    preprocessor = ColumnTransformer(transformers=[('num', StandardScaler(), num_cols), ('cat', OneHotEncoder(handle_unknown='ignore', drop='first'), cat_cols)], remainder='passthrough')
     X_processed = preprocessor.fit_transform(X)
-    
-    # Get feature names after one-hot encoding for SHAP summary
     try:
         ohe_feature_names = preprocessor.named_transformers_['cat'].get_feature_names_out(cat_cols)
         processed_feature_names = num_cols + ohe_feature_names.tolist()
-    except: # For older scikit-learn versions
-        processed_feature_names = feature_cols # Won't be perfect but avoids crashing
-
+    except: processed_feature_names = feature_cols
     X_processed_df = pd.DataFrame(X_processed, columns=processed_feature_names, index=X.index)
-
-    # Train XGBoost model
     model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=250, early_stopping_rounds=10, random_state=42)
-    # XGBoost needs a validation set for early stopping
     eval_set = [(X_processed_df, y)]
     model.fit(X_processed_df, y, eval_set=[(X_processed_df, y)], verbose=False)
-
-
-    # Explain model with SHAP
-    explainer = shap.Explainer(model)
-    shap_values = explainer(X_processed_df)
-
+    explainer = shap.Explainer(model); shap_values = explainer(X_processed_df)
     results = {"method": "XGBoost with SHAP"}
-    
-    # The mean of the SHAP values for a feature is its average marginal impact on the prediction
-    # For a binary treatment in an RCT, this is the ATE.
     for i, col in enumerate(X_processed_df.columns):
         is_treatment_col = any(treat_col == col or col.startswith(treat_col + "_") for treat_col in treatment_cols)
         if is_treatment_col:
             mean_shap = np.mean(shap_values.values[:, i])
             results[f"ate_{col}"] = mean_shap
-            
     return results
 
 def analyze_clustered_rct(
     df: pd.DataFrame, treatment_cols: List[str], outcome_col: str, cluster_col: str, covariate_cols: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Analyzes a clustered RCT using a Generalized Linear Mixed Model (GLMM)."""
+    # ... [Implementation from previous version] ...
     formula = f"{outcome_col} ~ {' + '.join(treatment_cols)}"
-    if covariate_cols:
-        formula += " + " + " + ".join(covariate_cols)
+    if covariate_cols: formula += " + " + " + ".join(covariate_cols)
     model = smf.mixedlm(formula, data=df, groups=df[cluster_col]).fit()
     results = {"method": "GLMM for Clustered RCT", "summary": str(model.summary())}
     for treat in treatment_cols:
@@ -216,38 +173,24 @@ def analyze_clustered_rct(
 def balance_observational_data(
     df: pd.DataFrame, treatment_col: str, covariate_cols: List[str]
 ) -> pd.DataFrame:
-    """
-    Pre-processes observational data using CEM and IPW to create a balanced sample.
-    """
-    # ... [Implementation from previous version, no changes needed] ...
-    work = df.copy()
-    cem_bins = 4
+    """Pre-processes observational data using CEM and IPW to create a balanced sample."""
+    # ... [Implementation from previous version] ...
+    work = df.copy(); cem_bins = 4
     for c in covariate_cols:
-        if pd.api.types.is_numeric_dtype(work[c]):
-             work[f"_cem_{c}"] = pd.qcut(work[c], q=min(cem_bins, work[c].nunique()), duplicates="drop", labels=False).astype(str)
-        else:
-             work[f"_cem_{c}"] = work[c].astype(str)
-    bin_cols = [f"_cem_{c}" for c in covariate_cols]
-    work["_cem_stratum"] = work[bin_cols].agg("|".join, axis=1)
-    vc = work.groupby("_cem_stratum")[treatment_col].nunique()
-    good_strata = vc[vc >= 2].index
-    pruned_df = work[work["_cem_stratum"].isin(good_strata)].copy()
-    X = pruned_df[covariate_cols]
-    y = pruned_df[treatment_col]
-    num, cat = _split_numeric_categorical(pruned_df, covariate_cols)
-    transformers = []
+        if pd.api.types.is_numeric_dtype(work[c]): work[f"_cem_{c}"] = pd.qcut(work[c], q=min(cem_bins, work[c].nunique()), duplicates="drop", labels=False).astype(str)
+        else: work[f"_cem_{c}"] = work[c].astype(str)
+    bin_cols = [f"_cem_{c}" for c in covariate_cols]; work["_cem_stratum"] = work[bin_cols].agg("|".join, axis=1)
+    vc = work.groupby("_cem_stratum")[treatment_col].nunique(); good_strata = vc[vc >= 2].index
+    pruned_df = work[work["_cem_stratum"].isin(good_strata)].copy(); X = pruned_df[covariate_cols]; y = pruned_df[treatment_col]
+    num, cat = _split_numeric_categorical(pruned_df, covariate_cols); transformers = []
     if num: transformers.append(("num", StandardScaler(), num))
     if cat: transformers.append(("cat", OneHotEncoder(handle_unknown='ignore', drop='first'), cat))
     if not transformers: raise ValueError("No valid covariates found for propensity model.")
     preproc = ColumnTransformer(transformers)
     model = Pipeline([("pre", preproc), ("clf", LogisticRegression(class_weight='balanced', max_iter=1000))])
-    model.fit(X, y)
-    e_hat_probs = model.predict_proba(X)
-    e1 = e_hat_probs[:, 1]
-    p_treat = np.mean(y)
+    model.fit(X, y); e_hat_probs = model.predict_proba(X); e1 = e_hat_probs[:, 1]; p_treat = np.mean(y)
     ipw = np.where(y == 1, p_treat / e1, (1 - p_treat) / (1 - e1))
-    pruned_df['ipw'] = ipw
-    print(f"Original N: {len(df)}, Pruned N: {len(pruned_df)}")
+    pruned_df['ipw'] = ipw; print(f"Original N: {len(df)}, Pruned N: {len(pruned_df)}")
     return pruned_df.drop(columns=bin_cols + ["_cem_stratum"])
 
 
@@ -259,20 +202,16 @@ def estimate_observational_ate(
     df: pd.DataFrame, treatment_col: str, outcome_col: str, covariate_cols: List[str]
 ) -> Dict[str, Any]:
     """Estimates ATE from observational data using a Balancing -> AIPW pipeline."""
+    # ... [Implementation from previous version] ...
     balanced_df = balance_observational_data(df, treatment_col, covariate_cols)
-    t = balanced_df[treatment_col].values
-    y_out = balanced_df[outcome_col].values
-    X = balanced_df[covariate_cols]
-    num, cat = _split_numeric_categorical(balanced_df, covariate_cols)
-    transformers = []
+    t = balanced_df[treatment_col].values; y_out = balanced_df[outcome_col].values; X = balanced_df[covariate_cols]
+    num, cat = _split_numeric_categorical(balanced_df, covariate_cols); transformers = []
     if num: transformers.append(("num", StandardScaler(), num))
     if cat: transformers.append(("cat", OneHotEncoder(handle_unknown='ignore', drop='first'), cat))
-    preproc = ColumnTransformer(transformers)
-    Xp = preproc.fit_transform(X)
+    preproc = ColumnTransformer(transformers); Xp = preproc.fit_transform(X)
     m1 = LinearRegression().fit(Xp[t == 1], y_out[t == 1], sample_weight=balanced_df['ipw'][t==1])
     m0 = LinearRegression().fit(Xp[t == 0], y_out[t == 0], sample_weight=balanced_df['ipw'][t==0])
-    mu1, mu0 = m1.predict(Xp), m0.predict(Xp)
-    e_hat_model = LogisticRegression(class_weight='balanced').fit(Xp, t)
+    mu1, mu0 = m1.predict(Xp), m0.predict(Xp); e_hat_model = LogisticRegression(class_weight='balanced').fit(Xp, t)
     e1 = e_hat_model.predict_proba(Xp)[:, 1]
     psi = (mu1 - mu0) + t * (y_out - mu1) / (e1 + 1e-12) - (1 - t) * (y_out - mu0) / (1 - e1 + 1e-12)
     ate = float(np.mean(psi))
@@ -283,11 +222,10 @@ def run_did_twfe(
     time_varying_covariates: Optional[List[str]] = None, weights_col: Optional[str] = None
 ) -> Dict[str, Any]:
     """Analyzes a staggered rollout using a TWFE model, with optional weights for Matching-DiD."""
-    entity_col, time_col = index_cols[0], index_cols[1]
-    df = df.set_index([entity_col, time_col])
+    # ... [Implementation from previous version] ...
+    entity_col, time_col = index_cols[0], index_cols[1]; df = df.set_index([entity_col, time_col])
     formula = f"{outcome_col} ~ {' + '.join(treatment_cols)} + EntityEffects + TimeEffects"
-    if time_varying_covariates:
-        formula += " + " + " + ".join(time_varying_covariates)
+    if time_varying_covariates: formula += " + " + " + ".join(time_varying_covariates)
     weights = df[weights_col] if weights_col else None
     model = PanelOLS.from_formula(formula, data=df, weights=weights)
     results = model.fit(cov_type='clustered', cluster_entity=True)
@@ -298,6 +236,53 @@ def run_did_twfe(
         output[f"pvalue_{treat}"] = results.pvalues[treat]
     return output
 
+def run_iv_2sls(
+    df: pd.DataFrame, treatment_col: str, outcome_col: str, instrument_cols: List[str], covariate_cols: List[str]
+) -> Dict[str, Any]:
+    """Performs Instrumental Variable analysis using Two-Stage Least Squares."""
+    # First Stage: Predict treatment from instruments and covariates
+    X1 = sm.add_constant(df[instrument_cols + covariate_cols])
+    first_stage = sm.OLS(df[treatment_col], X1).fit()
+    
+    # Second Stage: Predict outcome from predicted treatment and covariates
+    df['_T_hat'] = first_stage.fittedvalues
+    X2 = sm.add_constant(df[['_T_hat'] + covariate_cols])
+    second_stage = sm.OLS(df[outcome_col], X2).fit(cov_type='HC1')
+
+    return {
+        "method": "Instrumental Variables (2SLS)",
+        "ate": second_stage.params['_T_hat'],
+        "p_value": second_stage.pvalues['_T_hat'],
+        "first_stage_f_stat": first_stage.fvalue,
+        "summary": str(second_stage.summary())
+    }
+
+def run_synthetic_control(
+    df: pd.DataFrame, outcome_col: str, unit_col: str, time_col: str, treated_unit: Any, pre_period: Tuple[Any, Any]
+) -> Dict[str, Any]:
+    """Performs a simple Synthetic Control analysis."""
+    pre_mask = (df[time_col] >= pre_period[0]) & (df[time_col] <= pre_period[1])
+    y_tr_pre = df.loc[pre_mask & (df[unit_col] == treated_unit), outcome_col].values
+    donors = [u for u in df[unit_col].unique() if u != treated_unit]
+    Y_pre = np.column_stack([df.loc[pre_mask & (df[unit_col] == u), outcome_col].values for u in donors])
+    
+    w_ls, _, _, _ = np.linalg.lstsq(Y_pre, y_tr_pre, rcond=None)
+    w_nn = np.clip(w_ls, 0, None)
+    if w_nn.sum() > 0: w_nn = w_nn / w_nn.sum()
+    else: w_nn = np.ones_like(w_nn) / len(w_nn)
+        
+    y_sc_full = np.sum(np.column_stack([w_nn[i] * df.loc[df[unit_col] == u, outcome_col].values for i, u in enumerate(donors)]), axis=1)
+    
+    results_df = df.loc[df[unit_col] == treated_unit, [time_col, outcome_col]].copy()
+    results_df['synthetic_outcome'] = y_sc_full
+    results_df['effect'] = results_df[outcome_col] - results_df['synthetic_outcome']
+    
+    return {
+        "method": "Synthetic Control",
+        "donor_weights": dict(zip(donors, w_nn)),
+        "results_df": results_df
+    }
+
 # =============================================================================
 # MODULE 5: ADVANCED FOLLOW-UP & SURVIVAL ANALYSIS
 # =============================================================================
@@ -307,13 +292,11 @@ def analyze_survival_experiment(
     covariate_cols: Optional[List[str]] = None, weights_col: Optional[str] = None
 ) -> Dict[str, Any]:
     """Analyzes a survival experiment using a Cox Proportional Hazards model."""
+    # ... [Implementation from previous version] ...
     formula = " + ".join(treatment_cols)
-    if covariate_cols:
-        formula += " + " + " + ".join(covariate_cols)
-    cph = CoxPHFitter()
-    cph.fit(df, duration_col=duration_col, event_col=event_col, formula=formula, weights_col=weights_col)
-    summary = cph.summary.reset_index()
-    results = {"method": "Cox Proportional Hazards", "summary": str(cph.summary)}
+    if covariate_cols: formula += " + " + " + ".join(covariate_cols)
+    cph = CoxPHFitter(); cph.fit(df, duration_col=duration_col, event_col=event_col, formula=formula, weights_col=weights_col)
+    summary = cph.summary.reset_index(); results = {"method": "Cox Proportional Hazards", "summary": str(cph.summary)}
     for treat in treatment_cols:
         row = summary[summary['covariate'] == treat]
         if not row.empty:
@@ -326,15 +309,60 @@ def find_heterogeneous_effects(
     df: pd.DataFrame, treatment_col: str, outcome_col: str, feature_cols: List[str]
 ) -> Dict[str, Any]:
     """Finds subgroups with different treatment effects using a Causal Tree."""
-    y = df[outcome_col]
-    treatment = df[treatment_col]
-    X = df[feature_cols]
+    # ... [Implementation from previous version] ...
+    y = df[outcome_col]; treatment = df[treatment_col]; X = df[feature_cols]
     treatment_str = treatment.map({0: 'control', 1: 'treatment'}).astype(str)
     causal_tree = CausalTreeRegressor(max_depth=4, min_samples_leaf=int(len(df)*0.05))
     causal_tree.fit(X=X, treatment=treatment_str, y=y)
+    return { "method": "Causal Tree for Heterogeneous Effects (CATE)", "fitted_tree": causal_tree, "leaf_summary": causal_tree.summary() }
+
+def analyze_with_meta_learner(
+    df: pd.DataFrame, treatment_col: str, outcome_col: str, covariate_cols: List[str], method: str = 's_learner'
+) -> Dict[str, Any]:
+    """Analyzes data using S-Learner or T-Learner from causal_nonrct_pipeline."""
+    X = df[covariate_cols].copy(); t = df[treatment_col]; y = df[outcome_col]
+    
+    if method == 's_learner':
+        Xs = pd.concat([X, t.astype(float)], axis=1)
+        rf = RandomForestRegressor(n_estimators=100, random_state=42).fit(Xs, y)
+        X1 = pd.concat([X, pd.Series(1.0, index=X.index, name=treatment_col)], axis=1)
+        X0 = pd.concat([X, pd.Series(0.0, index=X.index, name=treatment_col)], axis=1)
+        ate = np.mean(rf.predict(X1) - rf.predict(X0))
+    elif method == 't_learner':
+        rf1 = RandomForestRegressor(n_estimators=100, random_state=42).fit(X[t==1], y[t==1])
+        rf0 = RandomForestRegressor(n_estimators=100, random_state=42).fit(X[t==0], y[t==0])
+        ate = np.mean(rf1.predict(X) - rf0.predict(X))
+    else:
+        raise ValueError("Method must be 's_learner' or 't_learner'")
+        
+    return {"method": method, "ate": ate}
+    
+def estimate_observational_ate_dml_multi(
+    df: pd.DataFrame, treatment_cols: List[str], outcome_col: str, covariate_cols: List[str]
+) -> Dict[str, Any]:
+    """Estimates ATEs for multiple treatments using Double Machine Learning."""
+    y = df[outcome_col].values; X = df[covariate_cols]; Tmat = df[treatment_cols].values
+    kf = KFold(n_splits=3, shuffle=True, random_state=42)
+    fold_betas = []
+    
+    for tr_idx, te_idx in kf.split(X):
+        X_tr, X_te = X.iloc[tr_idx], X.iloc[te_idx]
+        y_tr, y_te = y[tr_idx], y[te_idx]
+
+        m_y = Ridge().fit(X_tr, y_tr)
+        y_res = y_te - m_y.predict(X_te)
+        
+        T_res = np.zeros_like(Tmat[te_idx])
+        for i in range(len(treatment_cols)):
+            m_t = Ridge().fit(X_tr, Tmat[tr_idx, i])
+            T_res[:, i] = Tmat[te_idx, i] - m_t.predict(X_te)
+            
+        final_model = LinearRegression().fit(T_res, y_res)
+        fold_betas.append(final_model.coef_)
+
+    avg_betas = np.mean(fold_betas, axis=0)
     return {
-        "method": "Causal Tree for Heterogeneous Effects (CATE)",
-        "fitted_tree": causal_tree,
-        "leaf_summary": causal_tree.summary()
+        "method": "Multi-Treatment DML",
+        "ates": dict(zip(treatment_cols, avg_betas))
     }
 
