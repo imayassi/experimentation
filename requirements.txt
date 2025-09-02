@@ -12,6 +12,7 @@ linearmodels
 rdd
 causalml
 lifelines
+lightgbm
 
 # Advanced modeling libraries
 xgboost
