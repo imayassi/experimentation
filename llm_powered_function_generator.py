@@ -4,18 +4,18 @@ from typing import List, Dict, Any, Optional
 
 # =============================================================================
 #
-# LLM-Powered Function Generator
+# LLM-Powered Function Generator & Script Assembler
 #
 # Description:
-# This script defines a function that takes a recommended analysis plan from
-# the 'causal_advisor' LLM and generates Python code for any recommended
-# methodologies that are not currently available in the experimentation platform.
+# This script contains two LLM-powered agents:
+# 1. A "Generator" that writes Python code for missing causal methods.
+# 2. An "Assembler" that takes the output of the Generator and a high-level
+#    plan to create a complete, sequential, and runnable analysis script.
 #
 # =============================================================================
 
 # --- KNOWLEDGE BASE ---
-# This is the same knowledge base used by the advisor, representing the
-# platform's current capabilities.
+# Represents the platform's current capabilities.
 AVAILABLE_FUNCTIONS_KNOWLEDGE_BASE = """
 # Experimentation Platform: Available Functions
 
@@ -51,59 +51,40 @@ def generate_missing_functions(
     """
     Takes an analysis plan from the advisor LLM and generates Python code
     for any recommended methods missing from the platform.
-
-    Args:
-        llm_analysis_plan (str): The markdown string returned by the `get_causal_analysis_plan` function.
-        openai_api_key (Optional[str]): Your OpenAI API key. If None, it will try to use the
-                                       'OPENAI_API_KEY' environment variable.
-
-    Returns:
-        str: A string containing the generated Python code for the missing functions,
-             ready to be added to the platform.
     """
     api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        return "ERROR: OPENAI_API_KEY is not set. Please provide it or set the environment variable."
+        return "ERROR: OPENAI_API_KEY is not set."
 
-    # This prompt instructs a new LLM instance to act as a coder.
     system_prompt_for_coder = f"""
-    You are an expert Python developer specializing in implementing causal inference libraries like `did`, `econml`, `statsmodels`, and `linearmodels`.
+    You are an expert Python developer specializing in implementing causal inference libraries.
     Your task is to write complete, production-ready Python functions based on a methodologist's recommendation.
-
     You have been given a recommended analysis plan and a list of functions that are *already available* in our platform.
     Your job is to identify any methods mentioned in the plan that are **missing** from the available functions list and write the Python code for them.
 
     **Instructions:**
     1.  **Identify Missing Functions:** Carefully read the "Recommended Analysis Plan" and compare it against the "Available Functions Knowledge Base".
     2.  **Generate Code:** For each missing method, write a complete Python function.
-    3.  **Adhere to Platform Standards:** The generated functions MUST:
-        - Be fully self-contained, including all necessary imports (e.g., `from did.did import csdid`).
-        - Accept a pandas DataFrame as the primary input, along with clear arguments for column names (e.g., `treatment_col`, `outcome_col`, `index_cols`).
-        - Be well-documented with a docstring explaining what it does, its parameters, and what it returns.
-        - Return a dictionary of results, including at least the ATE, p-value, and confidence interval.
-    4.  **Handle No Missing Functions:** If all recommended methods are already in the knowledge base, simply return a Python comment block stating that, e.g., `# All recommended functions are already available.`
+    3.  **Adhere to Platform Standards:** The generated functions MUST be self-contained, accept a pandas DataFrame, be well-documented, and return a dictionary of results.
+    4.  **Handle No Missing Functions:** If all recommended methods are already in the knowledge base, return a Python comment block stating that.
     5.  **Output Format:** Wrap all generated Python code in a single, clean markdown code block.
     """
 
     user_prompt_for_coder = f"""
     Here is the context:
-
     --- AVAILABLE FUNCTIONS KNOWLEDGE BASE ---
     {AVAILABLE_FUNCTIONS_KNOWLEDGE_BASE}
     --- END KNOWLEDGE BASE ---
-
-
     --- RECOMMENDED ANALYSIS PLAN ---
     {llm_analysis_plan}
     --- END RECOMMENDED ANALYSIS PLAN ---
-
     Please generate the Python code for any missing functions as per your instructions.
     """
 
     try:
         openai.api_key = api_key
         resp = openai.chat.completions.create(
-            model="gpt-4o", # Using a powerful model for code generation
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt_for_coder},
                 {"role": "user", "content": user_prompt_for_coder}
@@ -113,38 +94,99 @@ def generate_missing_functions(
     except Exception as e:
         return f"# LLM call failed: {e}"
 
+def assemble_analysis_script(
+    llm_analysis_plan: str,
+    generated_functions_code: str,
+    openai_api_key: Optional[str] = None
+) -> str:
+    """
+    Takes the analysis plan and newly generated code to assemble a complete,
+    runnable Python script for the user.
+    """
+    api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return "ERROR: OPENAI_API_KEY is not set."
+
+    system_prompt_for_assembler = f"""
+    You are an expert Python data scientist who writes clean, runnable analysis scripts.
+    Your task is to assemble a complete script based on a high-level plan and blocks of pre-written code.
+
+    **Instructions:**
+    1.  **Understand the Sequence:** Read the "Recommended Analysis Plan" to understand the logical flow of the analysis.
+    2.  **Structure the Script:** Create a Python script with the following sections:
+        - Imports (pandas, numpy, and functions from `experimentation_platform.py`).
+        - The "Newly Generated Functions" code block, if any.
+        - A "Load Data" section with a placeholder for the user's DataFrame.
+        - "Define Variables" section for columns like treatment, outcome, etc.
+        - A step-by-step execution of the analysis plan.
+    3.  **Narrate the Script:** For each step in the execution, copy the markdown text from the "Recommended Analysis Plan" and place it as a comment block to explain what's happening and why.
+    4.  **Call the Functions:** After each comment block, write the corresponding Python function call (e.g., `balanced_df = balance_observational_data(...)`). Use placeholder variable names.
+    5.  **Output Format:** Return the complete script as a single, clean Python code block.
+    """
+
+    user_prompt_for_assembler = f"""
+    Here is the context:
+
+    --- AVAILABLE FUNCTIONS KNOWLEDGE BASE (for import reference) ---
+    {AVAILABLE_FUNCTIONS_KNOWLEDGE_BASE}
+    --- END KNOWLEDGE BASE ---
+
+    --- NEWLY GENERATED FUNCTIONS (to be included in the script) ---
+    {generated_functions_code}
+    --- END NEWLY GENERATED FUNCTIONS ---
+
+    --- RECOMMENDED ANALYSIS PLAN (this is your guide) ---
+    {llm_analysis_plan}
+    --- END RECOMMENDED ANALYSIS PLAN ---
+
+    Please generate the complete, runnable Python script that executes this plan.
+    """
+    try:
+        openai.api_key = api_key
+        resp = openai.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt_for_assembler},
+                {"role": "user", "content": user_prompt_for_assembler}
+            ]
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        return f"# LLM call failed: {e}"
+
 
 if __name__ == '__main__':
-    # --- Example Usage ---
-    # This is a sample plan that an "advisor" LLM might generate, specifically
-    # recommending a modern DiD estimator that is NOT in our knowledge base.
-
+    # --- Example: Full End-to-End Workflow ---
+    # Step 1: An "Advisor" LLM generates a high-level plan.
     sample_advisor_plan = """
 Hello! Your goal is to **"understand the impact of our new AI tool on engineer productivity"**.
-
-Based on your inputs, the best approach is a Difference-in-Differences (DiD) analysis on your panel data. While the platform has a standard TWFE model (`run_did_twfe`), for the highest accuracy with a staggered rollout, it is academic best practice to use a modern estimator robust to treatment effect heterogeneity.
+Based on your inputs, the best approach is a Difference-in-Differences (DiD) analysis. For the highest accuracy, it is academic best practice to use a modern estimator like Callaway & Sant'Anna (`csdid`).
 
 Here is your recommended sequential analysis plan:
 
 ### **Step 1: Core Estimation - Modern Difference-in-Differences**
-
-**Why this is necessary:** This method correctly handles staggered rollouts where treatment effects can vary over time, which is a known issue for traditional TWFE models.
-
+**Why this is necessary:** This method correctly handles staggered rollouts where treatment effects can vary over time.
 * **Recommended Method:** Use the Callaway & Sant'Anna estimator (`csdid`).
-* **Platform Availability:** **Note: This method is not available in the current platform.** It is the recommended best practice.
+* **Platform Availability:** **Note: This method is not available in the current platform.**
 
 ### **Step 2 (Follow-up): Understand Heterogeneity**
-...
+**Why this is necessary:** To find which user segments respond most differently to the treatment.
+* **Function to call:** `find_heterogeneous_effects()`
 """
-
-    print("--- Generating Code for Missing Functions Based on Advisor's Plan ---")
-    print("\n[ADVISOR'S PLAN]:")
+    print("--- 1. Advisor Plan Generated ---")
     print(sample_advisor_plan)
-    
+
+    # Step 2: A "Generator" LLM writes the code for the missing function.
+    print("\n--- 2. Generating Code for Missing Functions ---")
     generated_code = generate_missing_functions(
         llm_analysis_plan=sample_advisor_plan
     )
-
-    print("\n" + "="*50 + "\n")
-    print("[LLM CODER'S OUTPUT]:")
     print(generated_code)
+
+    # Step 3: An "Assembler" LLM takes the plan and new code to create a final script.
+    print("\n--- 3. Assembling the Final, Runnable Script ---")
+    final_script = assemble_analysis_script(
+        llm_analysis_plan=sample_advisor_plan,
+        generated_functions_code=generated_code
+    )
+    print(final_script)
