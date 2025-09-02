@@ -1,0 +1,25 @@
+# Core data science and ML libraries
+pandas
+numpy
+scipy
+statsmodels
+scikit-learn
+matplotlib
+tqdm
+
+# Specialized causal inference libraries
+linearmodels
+rdd
+causalml
+lifelines
+
+# Advanced modeling libraries
+xgboost
+shap
+
+# LLM integration
+openai
+
+# For Jupyter Notebook functionality
+ipython
+jupyter
