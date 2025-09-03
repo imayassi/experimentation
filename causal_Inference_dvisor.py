@@ -4,80 +4,81 @@ from typing import List, Dict, Any, Optional
 
 # =============================================================================
 #
-# Causal Inference Advisor powered by an LLM (v2 - Live API Call)
+# Causal Inference Advisor powered by an LLM (v2)
 #
 # Description:
-# This script uses a large language model (LLM) to recommend a sequential
-# analysis plan for a user's experiment. It takes a description of the
-# experiment's design and constraints as input, consults a "knowledge base"
-# of available functions from the experimentation platform, and generates a
-# step-by-step guide.
+# This version is upgraded to accept a structured data schema (column_map) and
+# prioritize advanced, non-parametric, multi-treatment estimators. The LLM
+# is now instructed to recommend the most robust methods like Double Machine
+# Learning (DML) with tree-based models as a first-class citizen.
 #
 # =============================================================================
 
-# --- CONFIGURATION ---
-# Load the API key from environment variables for security.
-# In your terminal, run: export OPENAI_API_KEY='your_key_here'
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 # --- KNOWLEDGE BASE ---
+# Represents the platform's current capabilities.
 AVAILABLE_FUNCTIONS_KNOWLEDGE_BASE = """
 # Experimentation Platform: Available Functions
 
 ## 1. Experiment Design
-- `calculate_sample_size_standard()`: Power analysis for binary or continuous metrics.
-- `calculate_sample_size_survival_mc()`: Power analysis for time-to-event metrics.
+- `calculate_sample_size_standard()`
+- `calculate_sample_size_survival_mc()`
 
 ## 2. RCT Analysis
-- `analyze_rct_ate()`: Estimates ATE for standard A/B tests using ANCOVA (CUPED).
-- `analyze_effects_with_xgboost()`: Estimates ATE using XGBoost and SHAP for non-linear effects.
-- `analyze_clustered_rct()`: Estimates ATE for clustered RCTs using a GLMM.
+- `analyze_rct_ate()`: Standard ANCOVA (CUPED).
+- `analyze_effects_with_xgboost()`: Non-linear estimation with XGBoost and SHAP.
+- `analyze_clustered_rct()`: For clustered RCTs using a GLMM.
 
 ## 3. Non-RCT Pre-processing
-- `balance_observational_data()`: Pre-processes non-RCT data with CEM (matching) and IPW (weighting). Returns a balanced DataFrame.
+- `balance_observational_data()`: Pre-processes data with CEM (matching) and IPW (weighting).
 
 ## 4. Non-RCT & Quasi-Experimental Estimation
 - `estimate_observational_ate()`: Full pipeline for observational data (Balancing -> AIPW).
-- `analyze_with_meta_learner()`: Estimates ATE using S-Learner or T-Learner (Random Forest-based).
+- `analyze_with_meta_learner()`: S-Learner or T-Learner (Random Forest-based).
 - `estimate_observational_ate_dml_multi()`: Estimates ATEs for multiple overlapping treatments using DML.
 - `run_did_twfe()`: Estimates ATE from a staggered rollout using a Two-Way Fixed Effects model.
 - `run_iv_2sls()`: Estimates ATE using an instrumental variable.
 - `run_synthetic_control()`: Estimates effect for a single treated unit.
 
 ## 5. Advanced Follow-up & Survival Analysis
-- `analyze_survival_experiment()`: Measures effect on time-to-event outcomes using a Cox Proportional Hazards model.
-- `find_heterogeneous_effects()`: Finds subgroups with different treatment effects using a Causal Tree.
+- `analyze_survival_experiment()`: Measures effect on time-to-event outcomes.
+- `find_heterogeneous_effects()`: Finds subgroups with a Causal Tree.
 """
 
 def get_causal_analysis_plan(
     is_rct: bool,
     data_design: str,
-    covariates: List[str],
+    column_map: Dict[str, List[str]],
     has_network_effects: bool,
     has_contamination: bool,
-    user_question: str
+    user_question: str,
+    openai_api_key: Optional[str] = None
 ) -> str:
     """
-    Makes a call to an LLM to generate a sequential causal analysis plan.
+    Makes a call to an LLM to generate a sequential causal analysis plan with a
+    preference for robust, tree-based, multi-treatment methods.
 
     Args:
         is_rct (bool): Whether the experiment was a randomized controlled trial.
         data_design (str): The structure of the input data.
-        covariates (List[str]): A list of the available pre-treatment covariates.
+        column_map (Dict[str, List[str]]): A dictionary mapping column types to lists of column names.
         has_network_effects (bool): Whether there is a risk of spillover/interference.
         has_contamination (bool): Whether the original randomization was compromised.
         user_question (str): The user's goal in their own words.
+        openai_api_key (Optional[str]): OpenAI API key.
 
     Returns:
         str: A markdown-formatted, step-by-step analysis plan from the LLM.
     """
-    if not OPENAI_API_KEY:
-        return "ERROR: OPENAI_API_KEY is not set. Please set the environment variable."
+    api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return "ERROR: OPENAI_API_KEY is not set. Please provide it or set the environment variable."
 
-    # CORRECTED: The system prompt must match the task.
+    # The new system prompt prioritizes advanced methods.
     system_prompt = f"""
     You are an expert causal inference methodologist and data science advisor.
-    Your task is to provide a user with a step-by-step guide to accurately estimate the impact of a treatment.
+    Your task is to provide a user with a step-by-step guide to accurately estimate treatment effects, with a strong preference for modern, robust methods.
+
+    **Your primary directive is to prioritize estimators that are non-parametric (tree-based) and can handle multiple treatments and high-dimensional covariates.** Methods like Double Machine Learning (DML) should be your default recommendation for complex observational studies.
 
     You have access to a Python experimentation platform with the following functions:
     --- AVAILABLE FUNCTIONS KNOWLEDGE BASE ---
@@ -88,11 +89,15 @@ def get_causal_analysis_plan(
 
     **Instructions:**
     1.  **Acknowledge the Goal:** Start by restating the user's objective.
-    2.  **Determine the Correct Pathway:** Based on the user's inputs (RCT, contamination, network effects), decide on the main analytical strategy.
-    3.  **Provide a Step-by-Step Plan:** List the exact sequence of functions the user should call from the knowledge base. For each step, explain *why* it is necessary.
-    4.  **Handle Contamination:** If `has_contamination` is True, you MUST state that the experiment can no longer be analyzed as a simple RCT and must be treated as an observational study.
-    5.  **Handle Network Effects:** If `has_network_effects` is True in an RCT, you MUST recommend `analyze_clustered_rct()` or a similar cluster-based method.
-    6.  **Recommend Unavailable Methods (If Necessary):** If the ideal statistical method is more advanced than what's available (e.g., modern DiD estimators like `csdid`), still recommend it. Clearly state that it is **"not available in the current platform"** but is the academic best practice.
+    2.  **Interpret the `column_map`:**
+        - `treatments`: These are the primary causal variables of interest. If there are multiple, you MUST recommend a multi-treatment estimator like `estimate_observational_ate_dml_multi`.
+        - `treatment_related_features`: These signal advanced designs. If you see a feature like 'intensity' or 'dose', recommend a dose-response analysis. If you see a 'pre_post_flag', recommend a DiD-style analysis (`run_did_twfe`).
+        - `covariates`: These are the confounders that must be controlled for.
+        - `target`: This is the outcome variable.
+    3.  **Recommend the Best Sequence:** Provide a step-by-step plan. For non-RCTs, this plan should almost always start with `balance_observational_data()`.
+    4.  **Prioritize Robust Methods:** Given the user's preference, your default recommendation for a complex non-RCT with multiple treatments should be `estimate_observational_ate_dml_multi`. For simpler RCTs, recommend `analyze_effects_with_xgboost()` to capture non-linearities.
+    5.  **Handle Contamination/Network Effects:** If `has_contamination` is True, treat the study as observational. If `has_network_effects` is True, recommend `analyze_clustered_rct()`.
+    6.  **Recommend Unavailable Methods (If Necessary):** If the ideal method is missing (e.g., Generalized Random Forests for dose-response), recommend it as the academic best practice and state that it's **"not available in the current platform"**.
     7.  **Format:** Present the final plan in clear, readable markdown.
     """
 
@@ -103,16 +108,13 @@ def get_causal_analysis_plan(
     - **Was there contamination?** {has_contamination}
     - **Was there a risk of network effects/interference?** {has_network_effects}
     - **What is the data design?** "{data_design}"
-    - **What are my available covariates?** {covariates}
+    - **Data Schema (`column_map`):** {column_map}
 
-    Please provide the best sequential plan to get a highly accurate estimate of the treatment's impact.
+    Please provide the best sequential plan to get a highly accurate estimate of the treatment's impact, prioritizing tree-based and multi-treatment methods.
     """
 
-    # --- REAL LLM CALL ---
-    # This now integrates your provided logic but uses the correct system prompt.
     try:
-        openai.api_key = OPENAI_API_KEY
-        # NOTE: "gpt-5" is a placeholder. Use a real model name like "gpt-4" or "gpt-4o".
+        openai.api_key = api_key
         resp = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -124,31 +126,34 @@ def get_causal_analysis_plan(
     except Exception as e:
         return f"LLM call failed: {e}"
 
-
 if __name__ == '__main__':
-    # --- Example Usage ---
-    # Scenario 1: A clean, standard A/B test.
-    print("--- Generating Plan for a Clean A/B Test ---")
-    plan_rct = get_causal_analysis_plan(
-        is_rct=True,
-        has_contamination=False,
-        has_network_effects=False,
-        data_design="cross-sectional",
-        covariates=["user_tenure", "past_purchases"],
-        user_question="measure the impact of a new checkout button on conversion"
-    )
-    print(plan_rct)
-    print("\n" + "="*50 + "\n")
+    # --- Example Usage with the New Input Format ---
+    print("--- Generating Plan for a Complex, Multi-Treatment Observational Study ---")
 
-    # Scenario 2: A complex, contaminated, staggered rollout.
-    print("--- Generating Plan for a Contaminated Staggered Rollout ---")
-    plan_non_rct = get_causal_analysis_plan(
-        is_rct=True,
-        has_contamination=True,
+    # Define the experiment using the new structured inputs
+    is_rct_input = False
+    data_design_input = "panel"
+    column_map_input = {
+        'treatments': ['chat_on', 'copilot_on', 'ia_on'],
+        'treatment_related_features': ['copilot_intensity_n'],
+        'covariates': ['age', 'tenure', 'region', 'y_pre', 'team_id'],
+        'target': ['efficiency']
+    }
+    user_question_input = """
+    I need to estimate the independent causal impact of 3 overlapping AI tools
+    on engineer efficiency from a staggered, non-random rollout. I also want to
+    understand if using Copilot more intensely has a bigger effect.
+    """
+
+    analysis_plan = get_causal_analysis_plan(
+        is_rct=is_rct_input,
+        data_design=data_design_input,
+        column_map=column_map_input,
         has_network_effects=False,
-        data_design="panel",
-        covariates=["user_tenure", "team_size", "pre_experiment_productivity"],
-        user_question="understand the impact of our new AI tool on engineer productivity"
+        has_contamination=False,
+        user_question=user_question_input
     )
-    print(plan_non_rct)
+
+    from IPython.display import display, Markdown
+    display(Markdown(analysis_plan))
 
