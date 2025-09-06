@@ -6,8 +6,8 @@ from contextlib import redirect_stdout
 from typing import List, Dict, Any, Optional
 
 # Import the LLM-powered agents from your other files
-from causal_advisor_v4 import get_causal_analysis_plan
-from function_generator_v5 import generate_missing_functions, assemble_analysis_script
+from causal_Inference_dvisor import *
+from llm_powered_function_generator import *
 
 # =============================================================================
 #
